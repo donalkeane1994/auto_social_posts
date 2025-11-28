@@ -30,15 +30,21 @@ RANK_EMOJI = {
 }
 
 #############################
-# Colours & fonts
+# Colours
 #############################
 BG = (31, 42, 77)        # deep navy
 WHITE = (255, 255, 255)
 GOLD = (255, 186, 0)
 
-TITLE_FONT = ImageFont.truetype("arial.ttf", 65)
-SUB_FONT = ImageFont.truetype("arial.ttf", 45)
-TEXT_FONT = ImageFont.truetype("arial.ttf", 38)
+#############################
+# Fonts (DejaVu Sans — works on GitHub)
+#############################
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+TITLE_FONT = ImageFont.truetype(FONT_BOLD, 65)
+SUB_FONT = ImageFont.truetype(FONT_BOLD, 45)
+TEXT_FONT = ImageFont.truetype(FONT_REGULAR, 38)
 
 #############################
 # Download ALL xml files for tomorrow
@@ -146,7 +152,6 @@ def render_post2(data, logo):
     d.text((40, y), title, font=TITLE_FONT, fill=WHITE)
     y += 110
 
-    # Dropping in class
     d.text((40, y), "Dropping In Class Today", font=SUB_FONT, fill=GOLD)
     y += 70
 
@@ -158,16 +163,17 @@ def render_post2(data, logo):
 
     y += 60
 
-    # Well handicapped today
     d.text((40, y), "Well Handicapped Today", font=SUB_FONT, fill=GOLD)
     y += 70
 
     for r in data["won"]:
         name = r.attrib["name"]
         time = r.attrib["raceTime"]
-        weight_now = r.find("Weight").attrib.get("weightNow")
-        weight_then = r.find("Weight").attrib.get("weightThen")
-        diff = int(weight_then) - int(weight_now)
+
+        w = r.find("Weight")
+        then_w = int(w.attrib["weightThen"])
+        now_w = int(w.attrib["weightNow"])
+        diff = then_w - now_w
 
         line = f"• {name} won off {diff}lbs higher – runs at {time}"
         d.text((40, y), line, font=TEXT_FONT, fill=WHITE)
@@ -189,7 +195,12 @@ def send_email(images):
 
     for path in images:
         with open(path, "rb") as f:
-            msg.add_attachment(f.read(), maintype="image", subtype="png", filename=os.path.basename(path))
+            msg.add_attachment(
+                f.read(),
+                maintype="image",
+                subtype="png",
+                filename=os.path.basename(path)
+            )
 
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as smtp:
@@ -205,7 +216,7 @@ def main():
         print("No files for tomorrow.")
         return
 
-    # load logo
+    # load logo from repo root
     logo = Image.open("logo.png").convert("RGBA")
     logo = logo.resize((180, 180))
 
