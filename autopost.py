@@ -479,12 +479,12 @@ def build_posts_for_meeting(meeting: Dict[str, Any]) -> List[Dict[str, Any]]:
     sections1: List[Dict[str, Any]] = []
     if meeting["top_track_trainers"]:
         sections1.append({
-            "heading": f"Top Track Trainers at {meeting_name} – Last 5 Years",
+            "heading": "Top Track Trainers – Last 5 Years",
             "lines": [trainer_line(it) for it in meeting["top_track_trainers"]],
         })
     if meeting["top_track_jockeys"]:
         sections1.append({
-            "heading": f"Top Track Jockeys at {meeting_name} – Last 5 Years",
+            "heading": "Top Track Jockeys – Last 5 Years",
             "lines": [jockey_line(it) for it in meeting["top_track_jockeys"]],
         })
 
@@ -516,7 +516,7 @@ def build_posts_for_meeting(meeting: Dict[str, Any]) -> List[Dict[str, Any]]:
             else:
                 lines.append(name)
         sections3.append({
-            "heading": f"Runners at {meeting_name} Dropping in Class",
+            "heading": "Horses Dropping in Class",
             "lines": lines,
         })
 
@@ -531,7 +531,7 @@ def build_posts_for_meeting(meeting: Dict[str, Any]) -> List[Dict[str, Any]]:
             else:
                 lines.append(f"{name} – runs in the {time} today")
         sections3.append({
-            "heading": f"Well Handicapped Horses Running at {meeting_name} Today",
+            "heading": "Well Handicapped Horses",
             "lines": lines,
         })
 
