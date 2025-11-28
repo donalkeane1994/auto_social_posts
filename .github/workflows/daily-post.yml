@@ -1,49 +1,9 @@
-name: Daily Racing Posts
-
-on:
-  schedule:
-    - cron: '0 9 * * *'
-  workflow_dispatch: {}
-
-jobs:
-  build-and-post:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pillow requests
-
-      - name: Run autopost script
-        env:
-          FTP_SERVER: ${{ secrets.FTP_SERVER }}
-          FTP_USER: ${{ secrets.FTP_USER }}
-          FTP_PASS: ${{ secrets.FTP_PASS }}
-          FB_APP_ID: ${{ secrets.FB_APP_ID }}
-          FB_APP_SECRET: ${{ secrets.FB_APP_SECRET }}
-          FB_USER_ACCESS_TOKEN: ${{ secrets.FB_USER_ACCESS_TOKEN }}
-          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-          IG_USER_ID: ${{ secrets.IG_USER_ID }}
-        run: |
-          python autopost.py
-
-      - name: Commit generated images to gh-pages
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -B gh-pages
-          mkdir -p output
-          cp -r output/*.png .
-          git add *.png
-          git commit -m "Auto-post images $(date -u +"%Y-%m-%d")" || echo "no changes"
-          git push -f origin gh-pages
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+- name: Run autopost script
+  env:
+    FTP_SERVER: ${{ secrets.FTP_SERVER }}
+    FTP_USER: ${{ secrets.FTP_USER }}
+    FTP_PASS: ${{ secrets.FTP_PASS }}
+    EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+    EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+  run: |
+    python autopost.py
