@@ -14,69 +14,83 @@ FTP_PASS = os.environ.get("FTP_PASS")
 EMAIL_ADDRESS = os.environ.get("EMAIL_ADDRESS")
 EMAIL_APP_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
 
-LOCAL_XML = "meeting.xml"
 OUT_DIR = "output"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-def download_xml():
+# -----------------------------------------------------
+# STEP 1 — DOWNLOAD *ALL* XML FILES FOR TODAY
+# -----------------------------------------------------
+def download_all_xml():
     ftp = ftplib.FTP(FTP_SERVER)
     ftp.login(FTP_USER, FTP_PASS)
     files = ftp.nlst()
+
     xml_files = [f for f in files if f.endswith(".xml")]
-    if not xml_files:
-        raise Exception("No XML found on FTP")
 
-    filename = xml_files[0]
-    bio = io.BytesIO()
-    ftp.retrbinary(f"RETR {filename}", bio.write)
+    downloaded = []
+    for filename in xml_files:
+        data = io.BytesIO()
+        ftp.retrbinary(f"RETR {filename}", data.write)
+        data.seek(0)
+
+        local_path = f"{OUT_DIR}/{filename}"
+        with open(local_path, "wb") as f:
+            f.write(data.getvalue())
+
+        downloaded.append(local_path)
+
     ftp.quit()
+    return downloaded
 
-    with open(LOCAL_XML, "wb") as f:
-        f.write(bio.getvalue())
-
-    return LOCAL_XML
-
+# -----------------------------------------------------
+# STEP 2 — PARSE A SINGLE XML FILE
+# -----------------------------------------------------
 def parse_xml(path):
     tree = ET.parse(path)
     root = tree.getroot()
+
     meeting = root.find("Meeting")
+    meeting_name = meeting.attrib.get("name", "Unknown Meeting")
+
     stats = meeting.find("MiscStatistics")
     topx = stats.find("TopXStatistics")
 
+    # helper to get jockey/trainer lists
     def get_list(name):
         for s in topx.findall("TopXStatistic"):
             if s.attrib.get("statisticType") == name:
                 return s.findall("Statistic")[:5]
         return []
 
-    top_track_jockeys = get_list("TopTrackJockeys")
-    hot_jockeys = get_list("HotJockeys")
-    top_track_trainers = get_list("TopTrackTrainers")
-    hot_trainers = get_list("HotTrainers")
-
-    drop_nodes = stats.find("RunnerDropInClass")
-    drop = drop_nodes.findall("Runner") if drop_nodes is not None else []
-
-    won_nodes = stats.find("WonOffHigherHandicap")
-    won = won_nodes.findall("Runner") if won_nodes is not None else []
-    won = won[:5]
-
-    return {
-        "top_track_jockeys": top_track_jockeys,
-        "hot_jockeys": hot_jockeys,
-        "top_track_trainers": top_track_trainers,
-        "hot_trainers": hot_trainers,
-        "drop": drop,
-        "won": won
+    data = {
+        "meeting": meeting_name,
+        "top_track_jockeys": get_list("TopTrackJockeys"),
+        "hot_jockeys": get_list("HotJockeys"),
+        "top_track_trainers": get_list("TopTrackTrainers"),
+        "hot_trainers": get_list("HotTrainers"),
     }
 
-def render_post1(data):
+    # dropping in class
+    drop_nodes = stats.find("RunnerDropInClass")
+    data["drop"] = drop_nodes.findall("Runner") if drop_nodes is not None else []
+
+    # well handicapped
+    won_nodes = stats.find("WonOffHigherHandicap")
+    won = won_nodes.findall("Runner") if won_nodes is not None else []
+    data["won"] = won[:5]
+
+    return data
+
+# -----------------------------------------------------
+# STEP 3 — RENDERS FOR POST 1 & POST 2
+# -----------------------------------------------------
+def render_post1(data, prefix):
     img = Image.new("RGB", (1080, 1080), "white")
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
 
     y = 40
-    draw.text((40, y), "Top Jockeys & Trainers", font=font, fill="black")
+    draw.text((40, y), f"{data['meeting']} – Top Jockeys & Trainers", font=font, fill="black")
     y += 60
 
     for title, items in [
@@ -88,68 +102,102 @@ def render_post1(data):
         draw.text((40, y), title, font=font, fill="black")
         y += 30
         for i in items:
-            name = i.attrib.get("name")
-            rank = i.attrib.get("rank")
-            wins = i.attrib.get("wins")
-            runs = i.attrib.get("runs")
-            draw.text((40, y), f"{rank}. {name} ({wins}/{runs})", font=font, fill="gray")
+            draw.text(
+                (40, y),
+                f"{i.attrib.get('rank')}. {i.attrib.get('name')} ({i.attrib.get('wins')}/{i.attrib.get('runs')})",
+                font=font, fill="gray"
+            )
             y += 25
         y += 20
 
-    out = f"{OUT_DIR}/post1.png"
+    out = f"{OUT_DIR}/{prefix}_post1.png"
     img.save(out)
     return out
 
-def render_post2(data):
+
+def render_post2(data, prefix):
     img = Image.new("RGB", (1080, 1080), "white")
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
 
     y = 40
-    draw.text((40, y), "Dropping in Class & Well Handicapped", font=font, fill="black")
+    draw.text((40, y), f"{data['meeting']} – Dropping & Handicapped", font=font, fill="black")
     y += 60
 
     draw.text((40, y), "Dropping in Class:", font=font, fill="black")
     y += 30
     for r in data["drop"][:10]:
-        draw.text((40, y), f"• {r.attrib.get('name')} ({r.attrib.get('raceTime')})", font=font, fill="gray")
+        draw.text(
+            (40, y),
+            f"• {r.attrib.get('name')} ({r.attrib.get('raceTime')})",
+            font=font,
+            fill="gray"
+        )
         y += 25
 
     y += 40
     draw.text((40, y), "Well Handicapped:", font=font, fill="black")
     y += 30
     for r in data["won"]:
-        draw.text((40, y), f"• {r.attrib.get('name')} ({r.attrib.get('raceTime')})", font=font, fill="gray")
+        draw.text(
+            (40, y),
+            f"• {r.attrib.get('name')} ({r.attrib.get('raceTime')})",
+            font=font,
+            fill="gray"
+        )
         y += 25
 
-    out = f"{OUT_DIR}/post2.png"
+    out = f"{OUT_DIR}/{prefix}_post2.png"
     img.save(out)
     return out
 
-def send_email_with_images(img1, img2):
+# -----------------------------------------------------
+# STEP 4 — EMAIL ALL IMAGES TOGETHER
+# -----------------------------------------------------
+def send_email(images):
     msg = EmailMessage()
-    msg["Subject"] = "Daily Racing Graphics"
+    msg["Subject"] = "Daily Racing Graphics (All Meetings)"
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = EMAIL_ADDRESS
-    msg.set_content("Your daily racing graphics are attached.")
+    msg.set_content("Your daily racing graphics are attached (all meetings).")
 
-    for path in [img1, img2]:
+    for path in images:
         with open(path, "rb") as f:
-            img_data = f.read()
-        msg.add_attachment(img_data, maintype="image", subtype="png", filename=os.path.basename(path))
+            msg.add_attachment(
+                f.read(),
+                maintype="image",
+                subtype="png",
+                filename=os.path.basename(path)
+            )
 
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as smtp:
         smtp.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
         smtp.send_message(msg)
 
+# -----------------------------------------------------
+# MAIN
+# -----------------------------------------------------
 def main():
-    xml_path = download_xml()
-    data = parse_xml(xml_path)
-    p1 = render_post1(data)
-    p2 = render_post2(data)
-    send_email_with_images(p1, p2)
-    print("Email sent!")
+    xml_files = download_all_xml()
+
+    all_images = []
+
+    for xml_path in xml_files:
+        data = parse_xml(xml_path)
+
+        # Make safe filename version
+        prefix = data["meeting"].replace(" ", "_")
+
+        p1 = render_post1(data, prefix)
+        p2 = render_post2(data, prefix)
+
+        all_images.extend([p1, p2])
+
+    # send ONE email containing ALL images
+    send_email(all_images)
+
+    print("Email sent with", len(all_images), "images!")
 
 if __name__ == "__main__":
     main()
