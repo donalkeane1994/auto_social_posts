@@ -3,14 +3,15 @@ import ftplib
 import io
 import smtplib
 import ssl
-import datetime
 from email.message import EmailMessage
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Any
+from datetime import date, timedelta
 
 from PIL import Image, ImageDraw, ImageFont
 
-# ----------------- Config from environment -----------------
+# --------------------------------------------------------------------
+# CONFIG / CONSTANTS
+# --------------------------------------------------------------------
 FTP_SERVER = os.environ.get("FTP_SERVER")
 FTP_USER = os.environ.get("FTP_USER")
 FTP_PASS = os.environ.get("FTP_PASS")
@@ -24,197 +25,136 @@ OUT_DIR = "output"
 os.makedirs(XML_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# Image constants
-IMG_W = 1080
-IMG_H = 1080
-BG_COLOR = (31, 42, 77)          # deep navy #1F2A4D
-HEADING_COLOR = (255, 186, 0)    # gold #FFBA00
-BODY_COLOR = (255, 255, 255)     # white
-MARGIN_X = 80
-MARGIN_TOP = 80
-MARGIN_BOTTOM = 80
-
-# Your logo file – saved in repo root as logo.png
+# Logo path (you said you can only have logo.png at repo root)
 LOGO_PATH = "logo.png"
 
+# Image styling
+IMG_W, IMG_H = 1080, 1080
+BACKGROUND_COLOR = (0x1F, 0x2A, 0x4D)   # #1F2A4D
+GOLD = (0xFF, 0xBA, 0x00)               # #FFBA00 (headings)
+WHITE = (0xFF, 0xFF, 0xFF)              # #FFFFFF (body text)
 
-# ----------------- Font helpers -----------------
-def load_font(candidates: List[str], size: int) -> ImageFont.ImageFont:
+LEFT_MARGIN = 80
+RIGHT_MARGIN = 80
+TOP_MARGIN = 60
+BOTTOM_MARGIN = 80
+
+# Base font sizes (will be scaled down to fit)
+BASE_TITLE_SIZE = 54
+BASE_HEADING_SIZE = 40
+BASE_BODY_SIZE = 30
+MIN_SCALE = 0.6  # Don't shrink below 60% of base size
+
+# --------------------------------------------------------------------
+# HELPERS
+# --------------------------------------------------------------------
+
+def ordinal(n: int) -> str:
+    """Return ordinal string for an integer: 1 -> '1st', 2 -> '2nd', etc."""
+    suffix = "th"
+    if n % 10 == 1 and n % 100 != 11:
+        suffix = "st"
+    elif n % 10 == 2 and n % 100 != 12:
+        suffix = "nd"
+    elif n % 10 == 3 and n % 100 != 13:
+        suffix = "rd"
+    return f"{n}{suffix}"
+
+
+def get_target_date_str() -> str:
     """
-    Try a few font names, fall back to default.
+    Target = tomorrow's date (for tomorrow's stats).
+    Format matches Meeting/@date like '29/11/2025'.
     """
-    for name in candidates:
-        try:
-            return ImageFont.truetype(name, size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
+    today = date.today()
+    target = today + timedelta(days=1)
+    s = target.strftime("%d/%m/%Y")
+    print(f"Target meeting date: {s}")
+    return s
 
 
-TITLE_FONT = load_font(["DejaVuSans-Bold.ttf", "Arial.ttf"], 56)
-SECTION_FONT = load_font(["DejaVuSans-Bold.ttf", "Arial.ttf"], 40)
-BODY_FONT = load_font(["DejaVuSans.ttf", "Arial.ttf"], 32)
-
-
-# ----------------- FTP helpers -----------------
-def ftp_connect() -> ftplib.FTP:
-    if not FTP_SERVER or not FTP_USER or not FTP_PASS:
-        raise RuntimeError("FTP credentials not set in environment")
+def ftp_download_all_xml():
+    """
+    Download ALL .xml files from FTP into XML_DIR.
+    Return list of local file paths.
+    """
+    print("Connecting to FTP...")
     ftp = ftplib.FTP(FTP_SERVER)
     ftp.login(FTP_USER, FTP_PASS)
-    return ftp
-
-
-def list_xml_files_for_date(ftp: ftplib.FTP, target_date: datetime.date) -> List[str]:
-    """
-    Filter XML files on FTP by filename day+month (DDMM) and prefer 5- prefix.
-    Example: 5-NBU-2911.xml -> 2911 for 29/11.
-    """
     names = ftp.nlst()
-    xml_names = [n for n in names if n.lower().endswith(".xml")]
-    if not xml_names:
+
+    xml_files = [n for n in names if n.lower().endswith(".xml")]
+    if not xml_files:
+        print("No XML files found on FTP.")
+        ftp.quit()
         return []
 
-    ddmm = target_date.strftime("%d%m")
-    # last 8..4 chars are DDMM
-    filtered = [n for n in xml_names if len(n) >= 8 and n[-8:-4] == ddmm]
+    local_paths = []
+    for fname in xml_files:
+        print(f"Downloading {fname} from FTP...")
+        bio = io.BytesIO()
+        ftp.retrbinary(f"RETR {fname}", bio.write)
+        bio.seek(0)
+        local_path = os.path.join(XML_DIR, fname)
+        with open(local_path, "wb") as f:
+            f.write(bio.read())
+        local_paths.append(local_path)
 
-    if not filtered:
-        # safety fallback (shouldn't normally happen)
-        filtered = xml_names
-
-    def prefix_rank(name: str) -> int:
-        if name.startswith("5-"):
-            return 0
-        if name.startswith("10-"):
-            return 1
-        if name.startswith("20-"):
-            return 2
-        return 3
-
-    filtered.sort(key=prefix_rank)
-    return filtered
+    ftp.quit()
+    print("Downloaded XML files:", local_paths)
+    return local_paths
 
 
-def download_xml_files(target_date: datetime.date) -> List[str]:
-    ftp = ftp_connect()
-    try:
-        xml_names = list_xml_files_for_date(ftp, target_date)
-        downloaded_paths: List[str] = []
-        print(f"Target meeting date: {target_date.isoformat()}")
-        for name in xml_names:
-            print(f"Downloading {name} from FTP...")
-            bio = io.BytesIO()
-            try:
-                ftp.retrbinary(f"RETR {name}", bio.write)
-            except Exception as e:
-                print(f"  -> failed: {e}")
-                continue
-            bio.seek(0)
-            local_path = os.path.join(XML_DIR, name)
-            with open(local_path, "wb") as f:
-                f.write(bio.read())
-            downloaded_paths.append(local_path)
-        print("Downloaded XML files:", downloaded_paths)
-        return downloaded_paths
-    finally:
-        ftp.quit()
-
-
-# ----------------- XML parsing -----------------
-def parse_meeting_file(path: str, target_date: datetime.date) -> Dict[str, Any] | None:
+def parse_meeting_file(path, target_date_str):
+    """
+    Parse one XML file and return meeting data dict
+    if the Meeting/@date matches target_date_str, else None.
+    """
     tree = ET.parse(path)
     root = tree.getroot()
     meeting = root.find("Meeting")
     if meeting is None:
         return None
 
-    date_str = meeting.attrib.get("date")
-    if not date_str:
-        return None
-
-    try:
-        day, month, year = map(int, date_str.split("/"))
-        meet_date = datetime.date(year, month, day)
-    except Exception:
-        return None
-
-    # Only keep meetings for the requested date
-    if meet_date != target_date:
+    m_date = meeting.attrib.get("date", "")
+    if m_date != target_date_str:
         return None
 
     meeting_name = meeting.attrib.get("name", "").strip()
     course = meeting.find("Course")
-    tla = course.attrib.get("tla") if course is not None else ""
+    tla = course.attrib.get("tla", "").strip() if course is not None else ""
 
     stats = meeting.find("MiscStatistics")
     if stats is None:
         return None
 
     topx = stats.find("TopXStatistics")
-    if topx is None:
-        return None
 
-    def get_top_list(stat_type: str) -> List[Dict[str, str]]:
-        node = None
+    def get_topx_list(stat_type):
+        if topx is None:
+            return []
         for s in topx.findall("TopXStatistic"):
             if s.attrib.get("statisticType") == stat_type:
-                node = s
-                break
-        items: List[Dict[str, str]] = []
-        if node is not None:
-            for st in node.findall("Statistic")[:5]:
-                items.append({
-                    "rank": st.attrib.get("rank", ""),
-                    "name": st.attrib.get("name", ""),
-                    "wins": st.attrib.get("wins", ""),
-                    "runs": st.attrib.get("runs", ""),
-                    "strikeRate": st.attrib.get("strikeRate", ""),
-                })
-        return items
+                return s.findall("Statistic")
+        return []
 
-    top_track_trainers = get_top_list("TopTrackTrainers")
-    top_track_jockeys = get_top_list("TopTrackJockeys")
-    hot_trainers = get_top_list("HotTrainers")
-    hot_jockeys = get_top_list("HotJockeys")
+    top_track_trainers = get_topx_list("TopTrackTrainers")[:5]
+    top_track_jockeys = get_topx_list("TopTrackJockeys")[:5]
+    hot_trainers = get_topx_list("HotTrainers")[:5]
+    hot_jockeys = get_topx_list("HotJockeys")[:5]
 
-    drop_runners: List[Dict[str, str]] = []
-    drop_node = stats.find("RunnerDropInClass")
-    if drop_node is not None:
-        for r in drop_node.findall("Runner"):
-            drop_runners.append({
-                "name": r.attrib.get("name", ""),
-                "raceTime": r.attrib.get("raceTime", ""),
-            })
+    # Dropping in class
+    drop_section = stats.find("RunnerDropInClass")
+    drop_runners = drop_section.findall("Runner") if drop_section is not None else []
 
-    won_runners: List[Dict[str, str]] = []
-    won_node = stats.find("WonOffHigherHandicap")
-    if won_node is not None:
-        for r in won_node.findall("Runner")[:5]:
-            weight_node = r.find("Weight")
-            weight_then = weight_node.attrib.get("weightThen") if weight_node is not None else ""
-            weight_now = weight_node.attrib.get("weightNow") if weight_node is not None else ""
-            diff = ""
-            try:
-                if weight_then and weight_now:
-                    diff_val = int(weight_then) - int(weight_now)
-                    if diff_val > 0:
-                        diff = str(diff_val)
-            except Exception:
-                diff = ""
-            won_runners.append({
-                "name": r.attrib.get("name", ""),
-                "raceTime": r.attrib.get("raceTime", ""),
-                "diff": diff,
-            })
-
-    if not (top_track_trainers or top_track_jockeys or hot_trainers or hot_jockeys or drop_runners or won_runners):
-        return None
+    # Well handicapped
+    won_section = stats.find("WonOffHigherHandicap")
+    won_runners = won_section.findall("Runner") if won_section is not None else []
+    won_runners = won_runners[:5]
 
     return {
         "meeting_name": meeting_name,
         "tla": tla,
-        "date": meet_date,
         "top_track_trainers": top_track_trainers,
         "top_track_jockeys": top_track_jockeys,
         "hot_trainers": hot_trainers,
@@ -224,311 +164,387 @@ def parse_meeting_file(path: str, target_date: datetime.date) -> Dict[str, Any] 
     }
 
 
-def ordinal(rank_str: str) -> str:
+# --------------------------------------------------------------------
+# TEXT LAYOUT AND RENDERING
+# --------------------------------------------------------------------
+
+def load_font(size: int) -> ImageFont.FreeTypeFont:
+    """
+    Try a reasonably standard TTF on GitHub runners, fall back to default.
+    """
     try:
-        n = int(rank_str)
+        return ImageFont.truetype("DejaVuSans.ttf", size)
     except Exception:
-        return rank_str
-    if 10 <= n % 100 <= 20:
-        suffix = "th"
+        return ImageFont.load_default()
+
+
+def build_lines_top_track(meeting_data):
+    mname = meeting_data["meeting_name"]
+    lines = []
+
+    # Title
+    lines.append({
+        "text": f"{mname} — Top Track Trainers & Jockeys (Last 5 Years)",
+        "style": "title"
+    })
+
+    # Trainers
+    lines.append({"text": "", "style": "spacer"})
+    lines.append({"text": f"Top Track Trainers at {mname} (Last 5 Years)", "style": "heading"})
+    if meeting_data["top_track_trainers"]:
+        for stat in meeting_data["top_track_trainers"]:
+            rank = int(stat.attrib.get("rank", "0") or "0")
+            name = stat.attrib.get("name", "")
+            wins = stat.attrib.get("wins", "")
+            runs = stat.attrib.get("runs", "")
+            sr = stat.attrib.get("strikeRate", "")
+            lines.append({
+                "text": f"{ordinal(rank)} {name} – {sr}% strike rate ({wins} wins from {runs} runners)",
+                "style": "body"
+            })
     else:
-        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
+        lines.append({"text": "No Top Track Trainer data available.", "style": "body"})
 
+    # Jockeys
+    lines.append({"text": "", "style": "spacer"})
+    lines.append({"text": f"Top Track Jockeys at {mname} (Last 5 Years)", "style": "heading"})
+    if meeting_data["top_track_jockeys"]:
+        for stat in meeting_data["top_track_jockeys"]:
+            rank = int(stat.attrib.get("rank", "0") or "0")
+            name = stat.attrib.get("name", "")
+            wins = stat.attrib.get("wins", "")
+            runs = stat.attrib.get("runs", "")
+            sr = stat.attrib.get("strikeRate", "")
+            lines.append({
+                "text": f"{ordinal(rank)} {name} – {sr}% strike rate ({wins} wins from {runs} rides)",
+                "style": "body"
+            })
+    else:
+        lines.append({"text": "No Top Track Jockey data available.", "style": "body"})
 
-# ----------------- Text layout helpers -----------------
-def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
-    if not text:
-        return 0
-    bbox = draw.textbbox((0, 0), text, font=font)
-    return bbox[2] - bbox[0]
-
-
-def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> List[str]:
-    """
-    Simple word-wrap so lines don't go off the edge.
-    """
-    words = text.split()
-    if not words:
-        return [""]
-    lines: List[str] = []
-    current = words[0]
-    for w in words[1:]:
-        test = current + " " + w
-        if text_width(draw, test, font) <= max_width:
-            current = test
-        else:
-            lines.append(current)
-            current = w
-    lines.append(current)
     return lines
 
 
-def load_logo() -> Image.Image | None:
-    if not os.path.exists(LOGO_PATH):
-        print("Logo file not found at", LOGO_PATH)
-        return None
-    try:
-        logo = Image.open(LOGO_PATH).convert("RGBA")
-    except Exception as e:
-        print("Could not open logo:", e)
-        return None
-    # scale so its height is about 220px (nice and visible)
-    target_h = 220
-    w, h = logo.size
-    if h == 0:
-        return logo
-    scale = target_h / float(h)
-    new_size = (int(w * scale), int(h * scale))
-    return logo.resize(new_size, Image.LANCZOS)
+def build_lines_hot(meeting_data):
+    mname = meeting_data["meeting_name"]
+    lines = []
+
+    lines.append({
+        "text": f"{mname} — Hot Trainers & Jockeys (Last Month)",
+        "style": "title"
+    })
+
+    # Hot Trainers
+    lines.append({"text": "", "style": "spacer"})
+    lines.append({"text": "Hot Trainers (Last Month)", "style": "heading"})
+    if meeting_data["hot_trainers"]:
+        for stat in meeting_data["hot_trainers"]:
+            rank = int(stat.attrib.get("rank", "0") or "0")
+            name = stat.attrib.get("name", "")
+            wins = stat.attrib.get("wins", "")
+            runs = stat.attrib.get("runs", "")
+            sr = stat.attrib.get("strikeRate", "")
+            lines.append({
+                "text": f"{ordinal(rank)} {name} – {sr}% strike rate ({wins} wins from {runs} runners)",
+                "style": "body"
+            })
+    else:
+        lines.append({"text": "No Hot Trainer data available.", "style": "body"})
+
+    # Hot Jockeys
+    lines.append({"text": "", "style": "spacer"})
+    lines.append({"text": "Hot Jockeys (Last Month)", "style": "heading"})
+    if meeting_data["hot_jockeys"]:
+        for stat in meeting_data["hot_jockeys"]:
+            rank = int(stat.attrib.get("rank", "0") or "0")
+            name = stat.attrib.get("name", "")
+            wins = stat.attrib.get("wins", "")
+            runs = stat.attrib.get("runs", "")
+            sr = stat.attrib.get("strikeRate", "")
+            lines.append({
+                "text": f"{ordinal(rank)} {name} – {sr}% strike rate ({wins} wins from {runs} rides)",
+                "style": "body"
+            })
+    else:
+        lines.append({"text": "No Hot Jockey data available.", "style": "body"})
+
+    return lines
 
 
-def render_post_image(title: str, sections: List[Dict[str, Any]], out_path: str) -> str:
+def build_lines_class_and_handicap(meeting_data):
+    mname = meeting_data["meeting_name"]
+    lines = []
+
+    lines.append({
+        "text": f"{mname} — Dropping in Class & Well Handicapped Today",
+        "style": "title"
+    })
+
+    # Dropping in class
+    lines.append({"text": "", "style": "spacer"})
+    lines.append({"text": f"Runners at {mname} dropping in class:", "style": "heading"})
+    drops = meeting_data["drop_runners"]
+    if drops:
+        for r in drops:
+            name = r.attrib.get("name", "")
+            rtime = r.attrib.get("raceTime", "")
+            lines.append({
+                "text": f"{name} runs in the {rtime}",
+                "style": "body"
+            })
+    else:
+        lines.append({"text": "No runners dropping in class today.", "style": "body"})
+
+    # Well handicapped
+    lines.append({"text": "", "style": "spacer"})
+    lines.append({"text": f"Well handicapped horses running at {mname} today:", "style": "heading"})
+    won = meeting_data["won_runners"]
+    if won:
+        for r in won:
+            name = r.attrib.get("name", "")
+            rtime = r.attrib.get("raceTime", "")
+            weight_node = r.find("Weight")
+            desc = ""
+            if weight_node is not None:
+                then_w = weight_node.attrib.get("weightThen", "")
+                now_w = weight_node.attrib.get("weightNow", "")
+                try:
+                    diff = int(then_w) - int(now_w)
+                    if diff > 0:
+                        desc = f"won off a {diff} lb higher mark – runs in the {rtime} today"
+                    else:
+                        desc = f"runs in the {rtime} today"
+                except Exception:
+                    desc = f"runs in the {rtime} today"
+            else:
+                desc = f"runs in the {rtime} today"
+
+            lines.append({
+                "text": f"{name} {desc}",
+                "style": "body"
+            })
+    else:
+        lines.append({"text": "No well handicapped horses today.", "style": "body"})
+
+    return lines
+
+
+def measure_total_height(lines, content_height_available):
     """
-    sections: list of {"heading": str, "lines": [str, ...]}
+    Find a scale factor so that all lines fit into the available content height.
+    We use a dummy image and textbbox (not textsize) for measurement.
     """
-    im = Image.new("RGB", (IMG_W, IMG_H), BG_COLOR)
+    dummy = Image.new("RGB", (IMG_W, IMG_H))
+    draw = ImageDraw.Draw(dummy)
+
+    def font_for(style, scale):
+        if style == "title":
+            size = max(int(BASE_TITLE_SIZE * scale), 12)
+        elif style == "heading":
+            size = max(int(BASE_HEADING_SIZE * scale), 12)
+        else:  # body or spacer
+            size = max(int(BASE_BODY_SIZE * scale), 12)
+        return load_font(size)
+
+    def total_height(scale):
+        y = 0
+        for line in lines:
+            if line["style"] == "spacer":
+                # explicit spacer line
+                y += int(18 * scale)
+                continue
+            text = line["text"]
+            if not text:
+                y += int(10 * scale)
+                continue
+            font = font_for(line["style"], scale)
+            bbox = draw.textbbox((0, 0), text, font=font)
+            h = bbox[3] - bbox[1]
+            # line height + gap between lines
+            y += h + int(10 * scale)
+        return y
+
+    scale = 1.0
+    h = total_height(scale)
+    while h > content_height_available and scale > MIN_SCALE:
+        scale -= 0.05
+        h = total_height(scale)
+
+    return max(scale, MIN_SCALE)
+
+
+def render_post_image(lines, out_path):
+    """
+    Render a single 1080x1080 image with dynamic scaling of fonts
+    so that all lines fit inside the content area.
+    """
+    # Measure logo size (if present) first
+    logo = None
+    logo_height = 0
+    if os.path.exists(LOGO_PATH):
+        try:
+            logo = Image.open(LOGO_PATH).convert("RGBA")
+            # Make logo nicely visible: taller than before
+            max_logo_width = 260
+            max_logo_height = 180
+            logo.thumbnail((max_logo_width, max_logo_height))
+            logo_height = logo.size[1]
+        except Exception as e:
+            print("Failed to load logo:", e)
+            logo = None
+            logo_height = 0
+
+    # Compute content top based on logo
+    if logo is not None:
+        content_top_y = TOP_MARGIN + logo_height + 30
+    else:
+        content_top_y = TOP_MARGIN + 20
+
+    content_bottom_y = IMG_H - BOTTOM_MARGIN
+    content_height = content_bottom_y - content_top_y
+
+    # Find scale factor
+    scale = measure_total_height(lines, content_height)
+    print(f"Using scale factor: {scale:.2f} for {out_path}")
+
+    # Helper for fonts
+    def font_for(style):
+        if style == "title":
+            size = max(int(BASE_TITLE_SIZE * scale), 12)
+        elif style == "heading":
+            size = max(int(BASE_HEADING_SIZE * scale), 12)
+        else:
+            size = max(int(BASE_BODY_SIZE * scale), 12)
+        return load_font(size)
+
+    # Draw final image
+    im = Image.new("RGB", (IMG_W, IMG_H), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(im)
 
-    # ---- Logo at top-left ----
-    logo = load_logo()
-    logo_height = 0
+    # Paste logo
     if logo is not None:
-        im.paste(logo, (MARGIN_X, MARGIN_TOP), logo)
-        _, logo_height = logo.size
+        im.paste(logo, (LEFT_MARGIN, TOP_MARGIN), logo)
 
-    # ---- Title under logo ----
-    title_x = MARGIN_X
-    title_y = MARGIN_TOP + (logo_height + 30 if logo_height else 0)
-    max_title_width = IMG_W - MARGIN_X * 2
+    y = content_top_y
 
-    title_lines = wrap_text(draw, title, TITLE_FONT, max_title_width)
-    for line in title_lines:
-        draw.text((title_x, title_y), line, font=TITLE_FONT, fill=HEADING_COLOR)
-        line_h = TITLE_FONT.getbbox("Ag")[3]
-        title_y += line_h + 8
+    for line in lines:
+        style = line["style"]
+        if style == "spacer":
+            y += int(18 * scale)
+            continue
 
-    y = title_y + 10  # start of content below title
-    max_text_width = IMG_W - 2 * MARGIN_X
+        text = line["text"]
+        if not text:
+            y += int(10 * scale)
+            continue
 
-    # ---- Sections ----
-    for sec in sections:
-        heading = sec["heading"]
-        lines = sec["lines"]
+        font = font_for(style)
+        # Colours: headings/title gold, rest white
+        if style in ("title", "heading"):
+            color = GOLD
+        else:
+            color = WHITE
 
-        # Heading (gold)
-        heading_lines = wrap_text(draw, heading, SECTION_FONT, max_text_width)
-        for hl in heading_lines:
-            if y > IMG_H - MARGIN_BOTTOM:
-                break
-            draw.text((MARGIN_X, y), hl, font=SECTION_FONT, fill=HEADING_COLOR)
-            line_h = SECTION_FONT.getbbox("Ag")[3]
-            y += line_h + 6
-        y += 6  # extra space after heading
+        # Left aligned text
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
 
-        # Body lines (white)
-        for text in lines:
-            wrapped = wrap_text(draw, text, BODY_FONT, max_text_width)
-            for wline in wrapped:
-                line_h = BODY_FONT.getbbox("Ag")[3]
-                if y > IMG_H - MARGIN_BOTTOM - line_h:
-                    # no more vertical space
-                    break
-                draw.text((MARGIN_X, y), wline, font=BODY_FONT, fill=BODY_COLOR)
-                y += line_h + 6
-            else:
-                # inner loop didn't break
-                continue
-            # inner loop broke, stop drawing further lines/sections
-            break
-
-        y += 12  # gap between sections
-        if y > IMG_H - MARGIN_BOTTOM:
-            break
+        x = LEFT_MARGIN
+        draw.text((x, y), text, font=font, fill=color)
+        y += text_h + int(10 * scale)
 
     im.save(out_path)
     print("Saved image:", out_path)
     return out_path
 
 
-# ----------------- Email -----------------
-def send_email(image_paths: List[str], target_date: datetime.date) -> None:
-    if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
-        raise RuntimeError("Email credentials not set in environment")
+# --------------------------------------------------------------------
+# EMAIL
+# --------------------------------------------------------------------
+
+def send_email_with_images(image_paths):
+    """
+    Send one email with all generated images attached.
+    """
+    if not image_paths:
+        print("No images to email – skipping email.")
+        return
 
     msg = EmailMessage()
-    msg["Subject"] = f"Racing Graphics for {target_date.strftime('%d %b %Y')}"
+    msg["Subject"] = "Daily Racing Graphics"
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = EMAIL_ADDRESS
-
-    if image_paths:
-        msg.set_content(
-            f"Attached are the social graphics for all meetings on {target_date.strftime('%d %b %Y')}."
-        )
-    else:
-        msg.set_content(
-            f"No meetings were found in the XML files for {target_date.strftime('%d %b %Y')}."
-        )
+    msg.set_content("Your daily racing graphics are attached.\n\nEach meeting has 3 images:\n1) Top Track Trainers/Jockeys\n2) Hot Trainers/Jockeys\n3) Dropping in Class & Well Handicapped.")
 
     for path in image_paths:
         with open(path, "rb") as f:
             data = f.read()
-        msg.add_attachment(
-            data,
-            maintype="image",
-            subtype="png",
-            filename=os.path.basename(path),
-        )
+        filename = os.path.basename(path)
+        msg.add_attachment(data, maintype="image", subtype="png", filename=filename)
 
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as smtp:
         smtp.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
         smtp.send_message(msg)
-    print("Email sent with", len(image_paths), "attachments")
+
+    print(f"Emailed {len(image_paths)} images to {EMAIL_ADDRESS}")
 
 
-# ----------------- Build content for posts -----------------
-def build_posts_for_meeting(meeting: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Returns list of posts; each post is {"title": str, "sections": [...]}
-    """
-    meeting_name = meeting["meeting_name"]
+# --------------------------------------------------------------------
+# MAIN
+# --------------------------------------------------------------------
 
-    # Helpers
-    def trainer_line(item: Dict[str, str]) -> str:
-        rank_str = ordinal(item.get("rank", ""))
-        name = item.get("name", "")
-        wins = item.get("wins", "")
-        runs = item.get("runs", "")
-        sr = item.get("strikeRate", "")
-        return f"{rank_str} {name} – {sr}% strike rate ({wins} wins from {runs} runners)"
-
-    def jockey_line(item: Dict[str, str]) -> str:
-        rank_str = ordinal(item.get("rank", ""))
-        name = item.get("name", "")
-        wins = item.get("wins", "")
-        runs = item.get("runs", "")
-        sr = item.get("strikeRate", "")
-        return f"{rank_str} {name} – {sr}% strike rate ({wins} wins from {runs} rides)"
-
-    # Post 1: Top track trainers/jockeys (last 5 years)
-    sections1: List[Dict[str, Any]] = []
-    if meeting["top_track_trainers"]:
-        sections1.append({
-            "heading": f"Top Track Trainers at {meeting_name} – Last 5 Years",
-            "lines": [trainer_line(it) for it in meeting["top_track_trainers"]],
-        })
-    if meeting["top_track_jockeys"]:
-        sections1.append({
-            "heading": f"Top Track Jockeys at {meeting_name} – Last 5 Years",
-            "lines": [jockey_line(it) for it in meeting["top_track_jockeys"]],
-        })
-
-    # Post 2: Hot trainers/jockeys (last month)
-    sections2: List[Dict[str, Any]] = []
-    if meeting["hot_trainers"]:
-        sections2.append({
-            "heading": "Hot Trainers (Last Month)",
-            "lines": [trainer_line(it) for it in meeting["hot_trainers"]],
-        })
-    if meeting["hot_jockeys"]:
-        sections2.append({
-            "heading": "Hot Jockeys (Last Month)",
-            "lines": [jockey_line(it) for it in meeting["hot_jockeys"]],
-        })
-
-    # Post 3: Dropping in class + well handicapped
-    sections3: List[Dict[str, Any]] = []
-    drop = meeting["drop_runners"]
-    won = meeting["won_runners"]
-
-    if drop:
-        lines = []
-        for r in drop:
-            name = r.get("name", "")
-            time = r.get("raceTime", "")
-            if time:
-                lines.append(f"{name} running in the {time}")
-            else:
-                lines.append(name)
-        sections3.append({
-            "heading": f"Runners at {meeting_name} Dropping in Class",
-            "lines": lines,
-        })
-
-    if won:
-        lines = []
-        for r in won:
-            name = r.get("name", "")
-            time = r.get("raceTime", "")
-            diff = r.get("diff", "")
-            if diff:
-                lines.append(f"{name} won off a {diff}lb higher mark – runs in the {time} today")
-            else:
-                lines.append(f"{name} – runs in the {time} today")
-        sections3.append({
-            "heading": f"Well Handicapped Horses Running at {meeting_name} Today",
-            "lines": lines,
-        })
-
-    posts: List[Dict[str, Any]] = []
-    if sections1:
-        posts.append({
-            "title": meeting_name,
-            "sections": sections1,
-        })
-    if sections2:
-        posts.append({
-            "title": meeting_name,
-            "sections": sections2,
-        })
-    if sections3:
-        posts.append({
-            "title": meeting_name,
-            "sections": sections3,
-        })
-    return posts
-
-
-# ----------------- Main -----------------
 def main():
-    # Target = TOMORROW'S meetings (for 10AM run)
-    today = datetime.datetime.utcnow().date()
-    target_date = today + datetime.timedelta(days=1)
-    print("Preparing graphics for date:", target_date)
+    target_date_str = get_target_date_str()
 
-    xml_paths = download_xml_files(target_date)
-    meetings: Dict[str, Dict[str, Any]] = {}
-
-    for path in xml_paths:
-        print("Parsing", path)
-        try:
-            meeting = parse_meeting_file(path, target_date)
-        except Exception as e:
-            print("  -> parse failed:", e)
-            continue
-        if not meeting:
-            continue
-        key = f"{meeting['tla']}_{meeting['date'].isoformat()}"
-        # keep first per meeting key (5- files come first due to sorting)
-        if key not in meetings:
-            meetings[key] = meeting
-
-    if not meetings:
-        print("No meetings found for target date.")
-        send_email([], target_date)
+    xml_paths = ftp_download_all_xml()
+    if not xml_paths:
+        print("No XML paths downloaded, exiting.")
         return
 
-    image_paths: List[str] = []
-    for key, meeting in meetings.items():
-        posts = build_posts_for_meeting(meeting)
-        for idx, post in enumerate(posts, start=1):
-            filename = f"{meeting['tla']}_{target_date.strftime('%d%m')}_post{idx}.png"
-            out_path = os.path.join(OUT_DIR, filename)
-            render_post_image(post["title"], post["sections"], out_path)
-            image_paths.append(out_path)
+    # Parse meetings for target date
+    meetings = []
+    for path in xml_paths:
+        try:
+            m = parse_meeting_file(path, target_date_str)
+            if m is not None:
+                meetings.append(m)
+        except Exception as e:
+            print(f"Error parsing {path}: {e}")
 
-    send_email(image_paths, target_date)
+    if not meetings:
+        print(f"No meetings found for {target_date_str}.")
+        return
+
+    print(f"Found {len(meetings)} meetings for target date.")
+
+    all_images = []
+
+    for m in meetings:
+        tla = m["tla"] or "MEETING"
+        tla_safe = tla.replace("/", "_")
+
+        # Post 1: Top track trainers/jockeys
+        lines1 = build_lines_top_track(m)
+        out1 = os.path.join(OUT_DIR, f"{tla_safe}_1_top_track.png")
+        render_post_image(lines1, out1)
+        all_images.append(out1)
+
+        # Post 2: Hot trainers/jockeys
+        lines2 = build_lines_hot(m)
+        out2 = os.path.join(OUT_DIR, f"{tla_safe}_2_hot.png")
+        render_post_image(lines2, out2)
+        all_images.append(out2)
+
+        # Post 3: Dropping in class + well handicapped
+        lines3 = build_lines_class_and_handicap(m)
+        out3 = os.path.join(OUT_DIR, f"{tla_safe}_3_class_handicap.png")
+        render_post_image(lines3, out3)
+        all_images.append(out3)
+
+    # Send one email with all images
+    send_email_with_images(all_images)
 
 
 if __name__ == "__main__":
