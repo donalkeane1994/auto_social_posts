@@ -556,9 +556,9 @@ def build_posts_for_meeting(meeting: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 # ----------------- Main -----------------
 def main():
-    # Target = TOMORROW'S meetings (for 10AM run)
+    # Target = TODAY'S meetings (for 10AM run with updated stats)
     today = datetime.datetime.utcnow().date()
-    target_date = today + datetime.timedelta(days=1)
+    target_date = today
     print("Preparing graphics for date:", target_date)
 
     xml_paths = download_xml_files(target_date)
