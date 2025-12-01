@@ -416,7 +416,7 @@ def render_post_image(title: str, sections: List[Dict[str, Any]], out_path: str)
 
 
 # ----------------- Email -----------------
-def send_email(image_paths: List[str], target_date: datetime.date) -> None:
+def send_email(image_paths: List[str], target_date: datetime.date, meeting_names: List[str]) -> None:
     if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
         raise RuntimeError("Email credentials not set in environment")
 
@@ -425,10 +425,26 @@ def send_email(image_paths: List[str], target_date: datetime.date) -> None:
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = EMAIL_ADDRESS
 
-    if image_paths:
-        msg.set_content(
-            f"Attached are the social graphics for all meetings on {target_date.strftime('%d %b %Y')}."
-        )
+    if image_paths and meeting_names:
+        # Build the social media post
+        meeting_list = " · ".join(meeting_names)
+        hashtags = " ".join([f"#{name.lower().replace(' ', '')}" for name in meeting_names])
+        
+        social_post = f"""Today's Meetings: {meeting_list}
+
+Here are your standout stats for today — top trainers, in-form jockeys, and horses dropping in class or well-handicapped. Get the full breakdown and more smart-betting tools at HorseRacingHack.com
+
+#horseracing #racingstats #horses #bettingtips #racingform #racingtips {hashtags} #horseracinghack"""
+        
+        email_body = f"""Attached are the social graphics for all meetings on {target_date.strftime('%d %b %Y')}.
+
+--- SOCIAL MEDIA POST ---
+
+{social_post}
+
+--- END SOCIAL MEDIA POST ---
+"""
+        msg.set_content(email_body)
     else:
         msg.set_content(
             f"No meetings were found in the XML files for {target_date.strftime('%d %b %Y')}."
@@ -580,9 +596,12 @@ def main():
 
     if not meetings:
         print("No meetings found for target date.")
-        send_email([], target_date)
+        send_email([], target_date, [])
         return
 
+    # Collect meeting names for social post
+    meeting_names = [meeting['meeting_name'] for meeting in meetings.values()]
+    
     image_paths: List[str] = []
     for key, meeting in meetings.items():
         posts = build_posts_for_meeting(meeting)
@@ -592,7 +611,7 @@ def main():
             render_post_image(post["title"], post["sections"], out_path)
             image_paths.append(out_path)
 
-    send_email(image_paths, target_date)
+    send_email(image_paths, target_date, meeting_names)
 
 
 if __name__ == "__main__":
