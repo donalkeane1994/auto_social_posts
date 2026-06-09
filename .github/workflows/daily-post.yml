@@ -2,7 +2,7 @@ name: Daily Racing Email
 
 on:
   schedule:
-    - cron: '0 10 * * *'   # 10:00 UTC every day
+    - cron: '0 8 * * *'   # 10:00 UTC every day
   workflow_dispatch: {}     # allows manual runs from the Actions tab
 
 jobs:
