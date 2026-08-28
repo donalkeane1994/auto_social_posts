@@ -2,26 +2,56 @@ name: Daily Racing Email
 
 on:
   schedule:
-    - cron: '0 8 * * *'   # 10:00 UTC every day
-  workflow_dispatch: {}     # allows manual runs from the Actions tab
+    # 08:13 UTC  =  09:13 Irish summer time (IST, UTC+1)
+    #            =  08:13 Irish winter time (GMT, UTC+0)  <- shifts back on 25 Oct
+    #
+    # Deliberately NOT on the hour. Minute :00 is the most congested slot on
+    # GitHub's scheduler (everyone's daily crons fire at once) and is where the
+    # long queue delays come from. Scheduled runs are best-effort, so this
+    # reduces the delay but does not guarantee an exact time.
+    - cron: '13 8 * * *'
+
+  workflow_dispatch: {}   # allows manual runs from the Actions tab
+
+permissions:
+  contents: read
+
+# Stops a slow run and the next day's run from overlapping.
+concurrency:
+  group: daily-racing-email
+  cancel-in-progress: false
 
 jobs:
   build-and-send:
     runs-on: ubuntu-latest
 
+    # Hard stop. Without this, a hung FTP connection can sit for hours and look
+    # identical to "queued". Normal runs should finish in a few minutes.
+    timeout-minutes: 30
+
+    env:
+      PYTHONUNBUFFERED: '1'   # stream print() output live instead of at the end
+
     steps:
+      - name: Show timing (diagnostic)
+        run: |
+          echo "Scheduled for : 08:13 UTC"
+          echo "Actually began: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
+          echo "Irish time    : $(TZ=Europe/Dublin date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo ""
+          echo "A big gap between 'scheduled' and 'began' = queued by GitHub."
+          echo "A small gap but a long total run time      = the script is slow."
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pillow
+        run: pip install --disable-pip-version-check pillow
 
       - name: Run autopost script
         env:
@@ -30,5 +60,15 @@ jobs:
           FTP_PASS: ${{ secrets.FTP_PASS }}
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
-        run: |
-          python autopost.py
+        run: python autopost.py
+
+      # Keeps a copy of the generated graphics even if the email step fails,
+      # so you can see whether the problem was generation or delivery.
+      - name: Upload generated images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: racing-graphics
+          path: output/
+          if-no-files-found: ignore
+          retention-days: 7
